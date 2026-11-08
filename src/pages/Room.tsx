@@ -17,10 +17,13 @@ export function Room({
   const [newMessage, setNewMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [roomId, setRoomId] = useState<string | null>(null);
-  const [isCreator, setIsCreator] = useState(false); // Track if current user is host
+  const [isCreator, setIsCreator] = useState(false);
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
   const [isSending, setIsSending] = useState(false);
   
+  // Generate a random 4-digit nickname for this session
+  const [myNickname] = useState(() => `anon_${Math.floor(1000 + Math.random() * 9000)}`);
+
   const [destructTime, setDestructTime] = useState<number>(0);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const channelRef = useRef<any>(null);
@@ -39,13 +42,13 @@ export function Room({
         .single();
 
       if (error || !data) {
-        alert("Room not found!");
+        alert("Room not found or has been closed!");
         onLeave();
         return;
       }
       
       setRoomId(data.id);
-      setIsCreator(data.created_by === userId); // Check if we are the host
+      setIsCreator(data.created_by === userId);
       
       const key = await deriveKey(password, data.salt);
       setCryptoKey(key);
@@ -80,7 +83,7 @@ export function Room({
     fetchMessages();
   }, [roomId, cryptoKey]);
 
-  // 3. Realtime Listeners (Messages, Typing, Room Deleted)
+  // 3. Realtime Listeners
   useEffect(() => {
     if (!roomId || !cryptoKey) return;
 
@@ -104,7 +107,6 @@ export function Room({
           setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
         }
       )
-      // LISTEN FOR ROOM DELETION
       .on(
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
@@ -171,7 +173,7 @@ export function Room({
       channelRef.current.send({
         type: "broadcast",
         event: "typing",
-        payload: { userId, nickname: "anon" }
+        payload: { userId, nickname: myNickname } // Send our random nickname
       });
     }
   };
@@ -205,7 +207,7 @@ export function Room({
       const { error } = await supabase.from("messages").insert({
         room_id: roomId,
         sender_id: userId,
-        nickname: "anon",
+        nickname: myNickname, // Save our random nickname to the DB
         iv: iv,                 
         ciphertext: ciphertext, 
         expires_at: expires_at
@@ -233,8 +235,12 @@ export function Room({
     if (isCreator) {
       const confirmDestroy = window.confirm("You are the creator. Disconnecting will permanently close this room for everyone and delete all messages. Continue?");
       if (confirmDestroy) {
-        // Delete the room (cascades to messages)
-        await supabase.from("rooms").delete().eq("id", roomId);
+        try {
+          await supabase.from("rooms").delete().eq("id", roomId);
+        } catch (error) {
+          console.error("Error deleting room:", error);
+        }
+        if (channelRef.current) supabase.removeChannel(channelRef.current);
         onLeave();
       }
     } else {
@@ -250,8 +256,8 @@ export function Room({
       <div className="chat-header">
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <span className="status-dot"></span>
-          <span style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>CONNECTED TO:</span>
-          <span style={{ fontWeight: "bold", letterSpacing: "1px" }}>{roomCode}</span>
+          <span style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>CONNECTED:</span>
+          <span style={{ fontWeight: "bold", letterSpacing: "1px" }}>{myNickname}</span>
           {isCreator && <span style={{ fontSize: "0.7rem", color: "var(--bg)", background: "var(--text)", padding: "2px 6px", borderRadius: "4px", marginLeft: "8px" }}>HOST</span>}
         </div>
         
@@ -304,7 +310,7 @@ export function Room({
           value={newMessage}
           onChange={handleTyping}
           onKeyDown={handleKeyDown}
-          placeholder="Type a message..."
+          placeholder={`Message as ${myNickname}...`}
           className="chat-input"
           rows={1}
           autoFocus
