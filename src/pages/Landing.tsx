@@ -1,14 +1,11 @@
 import { useState } from "react";
 import { supabase } from "../lib/supabase";
-import { generateVerifier, deriveKey } from "../lib/crypto";
-import { solveProofOfWork } from "../lib/pow";
+import { deriveKey } from "../lib/crypto";
 
 export function Landing({ 
-  onJoin, 
-  userId 
+  onJoin 
 }: { 
   onJoin: (name: string, key: CryptoKey) => void; 
-  userId: string | null 
 }) {
   const [createName, setCreateName] = useState("");
   const [createPassword, setCreatePassword] = useState("");
@@ -20,50 +17,54 @@ export function Landing({
   const [joinError, setJoinError] = useState("");
   const [joining, setJoining] = useState(false);
 
-  const [honeypot, setHoneypot] = useState("");
-
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreateError("");
-
-    if (honeypot) return setCreateError("Bot detected.");
-    if (!createName.match(/^[a-zA-Z0-9_-]{3,30}$/)) {
-      return setCreateError("Name must be 3-30 chars: letters, numbers, -, _");
-    }
-    if (createPassword.length < 6) {
-      return setCreateError("Password must be at least 6 characters.");
+    
+    if (!createName || !createPassword) {
+      return setCreateError("All fields required.");
     }
 
     setCreating(true);
 
     try {
-      // FORCE AUTH CHECK: If userId is missing, trigger an anonymous login right now
-      let currentUserId = userId;
-      if (!currentUserId) {
-        const { data, error } = await supabase.auth.signInAnonymously();
-        if (error) throw new Error("Auth failed: " + error.message);
-        currentUserId = data.user?.id || null;
-      }
-
-      if (!currentUserId) {
-        throw new Error("Unable to create a secure session. Please enable cookies.");
-      }
-
-      const proof = await solveProofOfWork();
-      const verifier = await generateVerifier(createName.toLowerCase(), createPassword);
+      console.log("1. Logging out to clear old state...");
+      // Clear any broken old sessions
+      await supabase.auth.signOut(); 
       
+      console.log("2. Signing in anonymously...");
+      const { data: authData, error: authError } = await supabase.auth.signInAnonymously();
+      
+      if (authError) {
+        console.error("AUTH ERROR:", authError);
+        throw new Error("Auth error: " + authError.message);
+      }
+      
+      console.log("3. Auth Success! User ID:", authData.user?.id);
+
+      // Hash the password securely
+      const msgBuffer = new TextEncoder().encode(createPassword);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      console.log("4. Calling RPC create_room...");
       const { data: roomId, error } = await supabase.rpc('create_room', {
         room_name: createName.toLowerCase(),
-        verifier: verifier,
-        client_proof: proof
+        pass_hash: hashHex
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error("RPC ERROR:", error);
+        throw error;
+      }
 
+      console.log("5. Room created ID:", roomId);
       const key = await deriveKey(createPassword, roomId);
       onJoin(createName.toLowerCase(), key);
 
     } catch (err: any) {
+      console.error("CATCH ERROR:", err);
       setCreateError(err.message || "Failed to create room.");
     } finally {
       setCreating(false);
@@ -73,40 +74,49 @@ export function Landing({
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setJoinError("");
-
-    if (honeypot) return setJoinError("Bot detected.");
-    if (!joinName || !joinPassword) return setJoinError("Both fields are required.");
+    
+    if (!joinName || !joinPassword) {
+      return setJoinError("All fields required.");
+    }
 
     setJoining(true);
 
     try {
-      // FORCE AUTH CHECK
-      let currentUserId = userId;
-      if (!currentUserId) {
-        const { data, error } = await supabase.auth.signInAnonymously();
-        if (error) throw new Error("Auth failed: " + error.message);
-        currentUserId = data.user?.id || null;
-      }
-
-      if (!currentUserId) {
-        throw new Error("Unable to create a secure session. Please enable cookies.");
-      }
-
-      const proof = await solveProofOfWork();
-      const verifier = await generateVerifier(joinName.toLowerCase(), joinPassword);
+      console.log("1. Logging out to clear old state...");
+      await supabase.auth.signOut(); 
       
+      console.log("2. Signing in anonymously...");
+      const { data: authData, error: authError } = await supabase.auth.signInAnonymously();
+      
+      if (authError) {
+        console.error("AUTH ERROR:", authError);
+        throw new Error("Auth error: " + authError.message);
+      }
+      
+      console.log("3. Auth Success! User ID:", authData.user?.id);
+
+      const msgBuffer = new TextEncoder().encode(joinPassword);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      console.log("4. Calling RPC join_room...");
       const { data: roomId, error } = await supabase.rpc('join_room', {
         room_name: joinName.toLowerCase(),
-        verifier: verifier,
-        client_proof: proof
+        pass_hash: hashHex
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error("RPC ERROR:", error);
+        throw error;
+      }
 
+      console.log("5. Joined Room ID:", roomId);
       const key = await deriveKey(joinPassword, roomId);
       onJoin(joinName.toLowerCase(), key);
 
     } catch (err: any) {
+      console.error("CATCH ERROR:", err);
       setJoinError(err.message || "Invalid room name or password.");
     } finally {
       setJoining(false);
@@ -121,43 +131,32 @@ export function Landing({
       </div>
 
       <div className="landing-grid">
-        <input 
-          type="text" 
-          value={honeypot} 
-          onChange={(e) => setHoneypot(e.target.value)} 
-          style={{ display: 'none' }} 
-          tabIndex={-1} 
-          autoComplete="off" 
-        />
-
         <div className="action-panel">
           <h2 className="panel-title">Create Room</h2>
           <form onSubmit={handleCreateRoom} className="panel-form">
             <div className="input-group">
               <label>Room Name</label>
-              <input
-                type="text"
+              <input 
+                type="text" 
+                value={createName} 
+                onChange={(e) => setCreateName(e.target.value)} 
+                className="terminal-input" 
                 placeholder="e.g. alpha-room"
-                value={createName}
-                onChange={(e) => setCreateName(e.target.value.toLowerCase())}
-                maxLength={30}
-                className="terminal-input"
               />
             </div>
             <div className="input-group">
-              <label>Encryption Password</label>
-              <input
-                type="password"
+              <label>Password</label>
+              <input 
+                type="password" 
+                value={createPassword} 
+                onChange={(e) => setCreatePassword(e.target.value)} 
+                className="terminal-input" 
                 placeholder="Min 6 chars"
-                value={createPassword}
-                onChange={(e) => setCreatePassword(e.target.value)}
-                className="terminal-input"
               />
             </div>
             {createError && <div className="error-msg">{createError}</div>}
-            
             <button type="submit" className="btn" disabled={creating}>
-              {creating ? "Computing Proof..." : "Initialize Room"}
+              {creating ? "Computing..." : "Initialize Room"}
             </button>
           </form>
         </div>
@@ -167,29 +166,27 @@ export function Landing({
           <form onSubmit={handleJoinRoom} className="panel-form">
             <div className="input-group">
               <label>Room Name</label>
-              <input
-                type="text"
+              <input 
+                type="text" 
+                value={joinName} 
+                onChange={(e) => setJoinName(e.target.value)} 
+                className="terminal-input" 
                 placeholder="Enter room name"
-                value={joinName}
-                onChange={(e) => setJoinName(e.target.value.toLowerCase())}
-                maxLength={30}
-                className="terminal-input"
               />
             </div>
             <div className="input-group">
               <label>Password</label>
-              <input
-                type="password"
+              <input 
+                type="password" 
+                value={joinPassword} 
+                onChange={(e) => setJoinPassword(e.target.value)} 
+                className="terminal-input" 
                 placeholder="Enter password"
-                value={joinPassword}
-                onChange={(e) => setJoinPassword(e.target.value)}
-                className="terminal-input"
               />
             </div>
             {joinError && <div className="error-msg">{joinError}</div>}
-            
             <button type="submit" className="btn" disabled={joining}>
-              {joining ? "Computing Proof..." : "Connect to Room"}
+              {joining ? "Connecting..." : "Connect to Room"}
             </button>
           </form>
         </div>

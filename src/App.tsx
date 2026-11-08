@@ -6,6 +6,7 @@ import { useAuth } from "./hooks/useAuth";
 export default function App() {
   const [activeRoom, setActiveRoom] = useState<string | null>(null);
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
+  // We still use useAuth to keep the app in sync, but Landing handles its own login now
   const { userId, loading } = useAuth();
 
   const handleJoin = (name: string, key: CryptoKey) => {
@@ -19,11 +20,7 @@ export default function App() {
   };
 
   if (loading) {
-    return (
-      <div style={{ color: "#00ff41", fontFamily: "monospace", display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
-        Initializing secure connection...
-      </div>
-    );
+    return <div style={{ color: "#00ff41", fontFamily: "monospace", display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>Initializing secure connection...</div>;
   }
 
   return (
@@ -36,7 +33,7 @@ export default function App() {
           onLeave={handleLeave} 
         />
       ) : (
-        <Landing onJoin={handleJoin} userId={userId} />
+        <Landing onJoin={handleJoin} />
       )}
     </div>
   );
