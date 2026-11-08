@@ -19,8 +19,6 @@ export function Room({
   const [roomId, setRoomId] = useState<string | null>(null);
   const [isCreator, setIsCreator] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  
-  // Presence & Typing
   const [onlineUsers, setOnlineUsers] = useState<number>(0);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [myNickname] = useState(() => `anon_${Math.floor(1000 + Math.random() * 9000)}`);
@@ -28,8 +26,7 @@ export function Room({
   const channelRef = useRef<any>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-
-  // Block Copy/Paste
+  // Security: Block Copy/Paste
   useEffect(() => {
     const blockAction = (e: Event) => e.preventDefault();
     document.addEventListener("contextmenu", blockAction);
@@ -42,49 +39,32 @@ export function Room({
     };
   }, []);
 
-  // 1. Init Room
   useEffect(() => {
     async function initRoom() {
       if (!roomName) {
         onLeave();
         return;
       }
-
-      const { data, error } = await supabase
-        .from("rooms")
-        .select("id, created_by")
-        .eq("name", roomName)
-        .single();
-
+      const { data, error } = await supabase.from("rooms").select("id, created_by").eq("name", roomName).single();
       if (error || !data) {
         alert("ROOM NOT FOUND OR CLOSED");
         onLeave();
         return;
       }
-      
       setRoomId(data.id);
       setIsCreator(data.created_by === userId);
     }
     if (userId) initRoom();
   }, [roomName, userId, onLeave]);
 
-  // 2. Fetch & Realtime
   useEffect(() => {
     if (!roomId) return;
 
     async function fetchMessages() {
-      const { data } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("room_id", roomId)
-        .order("created_at", { ascending: true });
-
+      const { data } = await supabase.from("messages").select("*").eq("room_id", roomId).order("created_at", { ascending: true });
       if (data) {
         const decrypted = await Promise.all(
-          data.map(async (msg) => ({
-            ...msg,
-            text: await decryptMessage(msg.ciphertext, msg.iv, cryptoKey)
-          }))
+          data.map(async (msg) => ({ ...msg, text: await decryptMessage(msg.ciphertext, msg.iv, cryptoKey) }))
         );
         setMessages(decrypted);
       }
@@ -92,9 +72,7 @@ export function Room({
     }
     fetchMessages();
 
-    const channel = supabase.channel(`room_${roomId}`, {
-      config: { presence: { key: userId || "anon" } }
-    });
+    const channel = supabase.channel(`room_${roomId}`, { config: { presence: { key: userId || "anon" } } });
 
     channel
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `room_id=eq.${roomId}` },
@@ -118,7 +96,6 @@ export function Room({
       .on("presence", { event: "sync" }, () => {
         setOnlineUsers(Object.keys(channel.presenceState()).length);
       })
-      // LISTEN FOR TYPING BROADCASTS
       .on("broadcast", { event: "typing" }, (payload) => {
         if (payload.payload.userId !== userId) {
           const nickname = payload.payload.nickname;
@@ -126,10 +103,9 @@ export function Room({
             if (!prev.includes(nickname)) return [...prev, nickname];
             return prev;
           });
-          // Remove after 2.5 seconds of inactivity
           setTimeout(() => {
             setTypingUsers((prev) => prev.filter(u => u !== nickname));
-          }, 2500);
+          }, 2000);
         }
       })
       .subscribe(async (status) => {
@@ -140,16 +116,10 @@ export function Room({
     return () => { supabase.removeChannel(channel); };
   }, [roomId, cryptoKey, userId, onLeave, myNickname]);
 
-  // Handle Typing Broadcast
   const handleTyping = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setNewMessage(e.target.value);
-    
     if (channelRef.current && userId) {
-      channelRef.current.send({
-        type: "broadcast",
-        event: "typing",
-        payload: { userId, nickname: myNickname }
-      });
+      channelRef.current.send({ type: "broadcast", event: "typing", payload: { userId, nickname: myNickname } });
     }
   };
 
@@ -165,11 +135,7 @@ export function Room({
     try {
       const { ciphertext, iv } = await encryptMessage(textToSend, cryptoKey);
       const { error } = await supabase.from("messages").insert({
-        room_id: roomId,
-        sender_id: userId,
-        nickname: myNickname,
-        iv: iv,                 
-        ciphertext: ciphertext
+        room_id: roomId, sender_id: userId, nickname: myNickname, iv: iv, ciphertext: ciphertext
       });
       if (error) throw error;
     } catch (error: any) {
@@ -198,6 +164,7 @@ export function Room({
 
   return (
     <div className="chat-container">
+      {/* GLASS HEADER */}
       <div className="chat-header">
         <div className="header-info">
           <span className="status-dot"></span>
@@ -210,30 +177,25 @@ export function Room({
         </button>
       </div>
 
+      {/* MESSAGE AREA */}
       <div className="chat-messages" ref={scrollContainerRef}>
         {loading ? (
           <div className="system-msg">Decrypting secure logs...</div>
         ) : messages.length === 0 ? (
-          <div className="empty-state">
+          <div className="empty-state glass-panel">
             <div className="empty-icon">🔒</div>
             <div className="empty-text">Secure channel established.</div>
             <div className="empty-subtext">Messages are end-to-end encrypted.</div>
           </div>
         ) : (
-          messages.map((msg, index) => {
+          messages.map((msg) => {
             const isMe = msg.sender_id === userId;
-            const prevMsg = messages[index - 1];
-            const isConsecutive = prevMsg && prevMsg.sender_id === msg.sender_id && 
-              (new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime()) < 120000;
-
             return (
-              <div key={msg.id} className={`message ${isMe ? "my-message" : ""} ${isConsecutive ? "consecutive" : ""}`}>
-                {!isConsecutive && (
-                  <div className="msg-meta">
-                    <span className="msg-author">{isMe ? "YOU" : msg.nickname}</span>
-                    <span className="msg-time">{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                  </div>
-                )}
+              <div key={msg.id} className={`message ${isMe ? "my-message" : ""}`}>
+                <div className="msg-meta">
+                  <span className="msg-author">{isMe ? "YOU" : msg.nickname}</span>
+                  <span className="msg-time">{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
                 <div className="msg-text">{msg.text}</div>
               </div>
             );
@@ -248,6 +210,7 @@ export function Room({
         </div>
       )}
 
+      {/* GLASS INPUT COMPOSER */}
       <form onSubmit={sendMessage} className="chat-input-form">
         <span className="prompt-symbol">&gt;</span>
         <textarea

@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Landing } from "./pages/Landing";
 import { Room } from "./pages/Room";
+import { Intro } from "./components/Intro"; // <-- Import Intro
 import { useAuth } from "./hooks/useAuth";
 
 export default function App() {
+  const [showIntro, setShowIntro] = useState(true); // <-- Intro state
   const [activeRoom, setActiveRoom] = useState<string | null>(null);
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
-  // We still use useAuth to keep the app in sync, but Landing handles its own login now
   const { userId, loading } = useAuth();
 
   const handleJoin = (name: string, key: CryptoKey) => {
@@ -18,6 +19,11 @@ export default function App() {
     setActiveRoom(null);
     setCryptoKey(null);
   };
+
+  // If intro is playing, show it
+  if (showIntro) {
+    return <Intro onComplete={() => setShowIntro(false)} />;
+  }
 
   if (loading) {
     return <div style={{ color: "#00ff41", fontFamily: "monospace", display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>Initializing secure connection...</div>;
