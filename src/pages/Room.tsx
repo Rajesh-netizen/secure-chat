@@ -26,8 +26,9 @@ export function Room({
 
   const [destructTime, setDestructTime] = useState<number>(0);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  
+  // Refs for scroll management and realtime channel
   const channelRef = useRef<any>(null);
-
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [showJumpButton, setShowJumpButton] = useState(false);
@@ -56,7 +57,7 @@ export function Room({
     if (userId) initRoom();
   }, [roomCode, password, userId, onLeave]);
 
-  // 2. Fetch Messages
+  // 2. Fetch Initial Messages
   useEffect(() => {
     if (!roomId || !cryptoKey) return;
 
@@ -83,23 +84,42 @@ export function Room({
     fetchMessages();
   }, [roomId, cryptoKey]);
 
-  // 3. Realtime Listeners
+  // 3. Realtime Subscriptions
   useEffect(() => {
     if (!roomId || !cryptoKey) return;
 
+    // Clean up previous channel if it exists
+    const channelName = `room_${roomId}`;
+    const existingChannel = supabase.channel(channelName);
+    supabase.removeChannel(existingChannel);
+
     const channel = supabase
-      .channel(`room_${roomId}`)
+      .channel(channelName)
+      // Listen for new messages
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages", filter: `room_id=eq.${roomId}` },
         async (payload) => {
           const decryptedText = await decryptMessage(payload.new.ciphertext, payload.new.iv, cryptoKey);
+          
           setMessages((prev) => {
+            // Prevent duplicate messages
             if (prev.some(m => m.id === payload.new.id)) return prev;
             return [...prev, { ...payload.new, text: decryptedText }];
           });
+
+          // Auto-scroll if user is near bottom
+          setTimeout(() => {
+            if (scrollContainerRef.current) {
+              const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+              if (scrollHeight - scrollTop - clientHeight < 150) {
+                scrollToBottom();
+              }
+            }
+          }, 100);
         }
       )
+      // Listen for deleted messages (burn or timer)
       .on(
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "messages", filter: `room_id=eq.${roomId}` },
@@ -107,6 +127,7 @@ export function Room({
           setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
         }
       )
+      // Listen for room deletion (Host disconnects)
       .on(
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
@@ -115,6 +136,7 @@ export function Room({
           onLeave();
         }
       )
+      // Typing Indicator Broadcast
       .on("broadcast", { event: "typing" }, (payload) => {
         if (payload.payload.userId !== userId) {
           setTypingUsers((prev) => {
@@ -129,10 +151,13 @@ export function Room({
       .subscribe();
 
     channelRef.current = channel;
-    return () => { supabase.removeChannel(channel); };
+
+    return () => { 
+      supabase.removeChannel(channel); 
+    };
   }, [roomId, cryptoKey, userId, onLeave]);
 
-  // Client-side Self-Destruct Timer
+  // 4. Self-Destruct Timer (Client-side)
   useEffect(() => {
     const interval = setInterval(() => {
       const now = new Date().getTime();
@@ -146,6 +171,7 @@ export function Room({
     return () => clearInterval(interval);
   }, []);
 
+  // --- Scroll Logic ---
   const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTo({ top: scrollContainerRef.current.scrollHeight, behavior });
@@ -167,13 +193,14 @@ export function Room({
     }
   }, [messages, isAtBottom]);
 
+  // --- Event Handlers ---
   const handleTyping = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setNewMessage(e.target.value);
     if (channelRef.current && userId) {
       channelRef.current.send({
         type: "broadcast",
         event: "typing",
-        payload: { userId, nickname: myNickname } // Send our random nickname
+        payload: { userId, nickname: myNickname }
       });
     }
   };
@@ -182,6 +209,7 @@ export function Room({
     e.preventDefault();
     if (!newMessage.trim() || !userId || !roomId || !cryptoKey || isSending) return;
 
+    // Handle /burn command
     if (newMessage.trim() === "/burn") {
       if (isCreator) {
         if (window.confirm("Are you sure you want to burn this room? All messages will be permanently deleted.")) {
@@ -207,7 +235,7 @@ export function Room({
       const { error } = await supabase.from("messages").insert({
         room_id: roomId,
         sender_id: userId,
-        nickname: myNickname, // Save our random nickname to the DB
+        nickname: myNickname,
         iv: iv,                 
         ciphertext: ciphertext, 
         expires_at: expires_at
@@ -253,26 +281,28 @@ export function Room({
 
   return (
     <div className="chat-container">
+      {/* HEADER */}
       <div className="chat-header">
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div className="header-info">
           <span className="status-dot"></span>
-          <span style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>CONNECTED:</span>
-          <span style={{ fontWeight: "bold", letterSpacing: "1px" }}>{myNickname}</span>
-          {isCreator && <span style={{ fontSize: "0.7rem", color: "var(--bg)", background: "var(--text)", padding: "2px 6px", borderRadius: "4px", marginLeft: "8px" }}>HOST</span>}
+          <span className="hide-on-mobile">CONNECTED:</span>
+          <span style={{ fontWeight: "bold" }}>{myNickname}</span>
+          {isCreator && <span className="host-badge">HOST</span>}
         </div>
         
         <select className="destruct-select" value={destructTime} onChange={(e) => setDestructTime(Number(e.target.value))}>
           <option value={0}>Self-Destruct: OFF</option>
-          <option value={10000}>10 Seconds</option>
-          <option value={60000}>1 Minute</option>
-          <option value={3600000}>1 Hour</option>
+          <option value={10000}>10s</option>
+          <option value={60000}>1m</option>
+          <option value={3600000}>1h</option>
         </select>
 
         <button onClick={handleDisconnect} className="leave-btn">
-          {isCreator ? "[ CLOSE ROOM ]" : "[ DISCONNECT ]"}
+          {isCreator ? "[ CLOSE ]" : "[ LEAVE ]"}
         </button>
       </div>
 
+      {/* MESSAGES */}
       <div className="chat-messages" ref={scrollContainerRef} onScroll={handleScroll}>
         {loading ? (
           <div className="system-msg">Decrypting secure logs...</div>
@@ -284,7 +314,7 @@ export function Room({
             return (
               <div key={msg.id} className={`message ${isMe ? "my-message" : ""}`}>
                 <div className="msg-meta">
-                  [{new Date(msg.created_at).toLocaleTimeString()}] {isMe ? "YOU" : msg.nickname}:
+                  [{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}] {isMe ? "YOU" : msg.nickname}:
                   {msg.expires_at && <span style={{ color: "#ff3333", marginLeft: "8px" }}>[BURNING]</span>}
                 </div>
                 <div className="msg-text">{msg.text}</div>
@@ -294,16 +324,19 @@ export function Room({
         )}
       </div>
 
+      {/* TYPING INDICATOR */}
       {typingUsers.length > 0 && (
         <div className="typing-indicator">{typingUsers.join(", ")} is typing...</div>
       )}
 
+      {/* JUMP BUTTON */}
       {showJumpButton && (
         <button className="jump-btn" onClick={() => { setIsAtBottom(true); scrollToBottom(); }}>
           ↓ NEW MESSAGES
         </button>
       )}
 
+      {/* INPUT */}
       <form onSubmit={sendMessage} className="chat-input-form">
         <span className="prompt-symbol">&gt;</span>
         <textarea
