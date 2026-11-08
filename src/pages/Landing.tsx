@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { supabase } from "../lib/supabase";
 import { generateVerifier, deriveKey } from "../lib/crypto";
+import { solveProofOfWork } from "../lib/pow";
 
 export function Landing({ 
   onJoin, 
@@ -19,11 +20,16 @@ export function Landing({
   const [joinError, setJoinError] = useState("");
   const [joining, setJoining] = useState(false);
 
+  // Honeypot field (bots fill everything)
+  const [honeypot, setHoneypot] = useState("");
+
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreateError("");
-    
-    // Validation: 3-30 chars, letters, numbers, hyphen, underscore
+
+    // Honeypot check
+    if (honeypot) return setCreateError("Bot detected.");
+
     if (!createName.match(/^[a-zA-Z0-9_-]{3,30}$/)) {
       return setCreateError("Name must be 3-30 chars: letters, numbers, -, _");
     }
@@ -31,33 +37,28 @@ export function Landing({
       return setCreateError("Password must be at least 6 characters.");
     }
     if (!userId) {
-      return setCreateError("Still connecting to secure network...");
+      return setCreateError("Still connecting...");
     }
 
     setCreating(true);
 
     try {
-      // 1. Generate one-way proof (password is never sent to server)
+      // 1. Solve Proof of Work
+      const proof = await solveProofOfWork();
+      
+      // 2. Generate Verifier
       const verifier = await generateVerifier(createName.toLowerCase(), createPassword);
       
-      // 2. Call secure RPC to create room
+      // 3. Send to Supabase
       const { data: roomId, error } = await supabase.rpc('create_room', {
         room_name: createName.toLowerCase(),
-        verifier: verifier
+        verifier: verifier,
+        client_proof: proof
       });
 
-      if (error) {
-        // Postgres Error 23505 = Unique Violation (Room name taken)
-        if (error.code === '23505') {
-          throw new Error("This room name is already taken. Please try another.");
-        }
-        throw error;
-      }
+      if (error) throw error;
 
-      // 3. Derive the AES key locally using the new roomId as salt
       const key = await deriveKey(createPassword, roomId);
-      
-      // 4. Enter the room
       onJoin(createName.toLowerCase(), key);
 
     } catch (err: any) {
@@ -71,34 +72,29 @@ export function Landing({
     e.preventDefault();
     setJoinError("");
 
-    if (!joinName || !joinPassword) {
-      return setJoinError("Both fields are required.");
-    }
-    if (!userId) {
-      return setJoinError("Still connecting to secure network...");
-    }
+    if (honeypot) return setJoinError("Bot detected.");
+    if (!joinName || !joinPassword) return setJoinError("Both fields are required.");
+    if (!userId) return setJoinError("Still connecting...");
 
     setJoining(true);
 
     try {
-      // 1. Generate proof
+      const proof = await solveProofOfWork();
       const verifier = await generateVerifier(joinName.toLowerCase(), joinPassword);
       
-      // 2. Verify with server via RPC
       const { data: roomId, error } = await supabase.rpc('join_room', {
         room_name: joinName.toLowerCase(),
-        verifier: verifier
+        verifier: verifier,
+        client_proof: proof
       });
 
       if (error) throw error;
 
-      // 3. Derive local AES key
       const key = await deriveKey(joinPassword, roomId);
       onJoin(joinName.toLowerCase(), key);
 
     } catch (err: any) {
-      // Postgres throws a generic error so attackers can't guess room names
-      setJoinError("Invalid room name or password.");
+      setJoinError(err.message || "Invalid room name or password.");
     } finally {
       setJoining(false);
     }
@@ -112,6 +108,16 @@ export function Landing({
       </div>
 
       <div className="landing-grid">
+        {/* Honeypot Field (Hidden from real users) */}
+        <input 
+          type="text" 
+          value={honeypot} 
+          onChange={(e) => setHoneypot(e.target.value)} 
+          style={{ display: 'none' }} 
+          tabIndex={-1} 
+          autoComplete="off" 
+        />
+
         {/* CREATE PANEL */}
         <div className="action-panel">
           <h2 className="panel-title">Create Room</h2>
@@ -139,7 +145,7 @@ export function Landing({
             </div>
             {createError && <div className="error-msg">{createError}</div>}
             <button type="submit" className="btn" disabled={creating}>
-              {creating ? "Creating..." : "Initialize Room"}
+              {creating ? "Computing Proof of Work..." : "Initialize Room"}
             </button>
           </form>
         </div>
@@ -171,7 +177,7 @@ export function Landing({
             </div>
             {joinError && <div className="error-msg">{joinError}</div>}
             <button type="submit" className="btn" disabled={joining}>
-              {joining ? "Authenticating..." : "Connect to Room"}
+              {joining ? "Computing Proof of Work..." : "Connect to Room"}
             </button>
           </form>
         </div>
