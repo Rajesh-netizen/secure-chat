@@ -2,7 +2,7 @@
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-// Derive a secure AES-GCM key from a password
+// 1. Derive a secure AES-GCM key from a password and a salt (room ID)
 export async function deriveKey(password: string, salt: string): Promise<CryptoKey> {
   const baseKey = await crypto.subtle.importKey(
     "raw",
@@ -15,7 +15,7 @@ export async function deriveKey(password: string, salt: string): Promise<CryptoK
   return crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt: enc.encode(salt), // We use a string as salt here
+      salt: enc.encode(salt), // The room ID acts as the salt
       iterations: 100000,     // High iteration count for security
       hash: "SHA-256",
     },
@@ -26,7 +26,7 @@ export async function deriveKey(password: string, salt: string): Promise<CryptoK
   );
 }
 
-// Encrypt a plaintext message
+// 2. Encrypt a plaintext message
 export async function encryptMessage(text: string, key: CryptoKey) {
   const iv = crypto.getRandomValues(new Uint8Array(12)); // Random IV every time
   
@@ -43,7 +43,7 @@ export async function encryptMessage(text: string, key: CryptoKey) {
   };
 }
 
-// Decrypt a ciphertext message
+// 3. Decrypt a ciphertext message
 export async function decryptMessage(ciphertextB64: string, ivB64: string, key: CryptoKey) {
   try {
     const ciphertext = Uint8Array.from(atob(ciphertextB64), c => c.charCodeAt(0));
@@ -59,4 +59,21 @@ export async function decryptMessage(ciphertextB64: string, ivB64: string, key: 
   } catch (e) {
     return "[Decryption Failed]"; // If the key is wrong or data is corrupted
   }
+}
+
+// 4. Generate a one-way HMAC verifier (Proves password without sending it)
+export async function generateVerifier(roomName: string, password: string): Promise<string> {
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw", 
+    enc.encode(password), 
+    { name: "HMAC", hash: "SHA-256" }, 
+    false, 
+    ["sign"]
+  );
+  
+  // Sign the room name with the password
+  const signature = await crypto.subtle.sign("HMAC", keyMaterial, enc.encode(roomName));
+  
+  // Return as base64 string
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }

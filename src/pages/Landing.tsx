@@ -1,17 +1,21 @@
 import { useState } from "react";
 import { supabase } from "../lib/supabase";
+import { generateVerifier, deriveKey } from "../lib/crypto";
 
-// Add userId to props
-export function Landing({ onJoin, userId }: { onJoin: (code: string, password: string) => void; userId: string | null }) {
-  const [createCode, setCreateCode] = useState("");
+export function Landing({ 
+  onJoin, 
+  userId 
+}: { 
+  onJoin: (name: string, key: CryptoKey) => void; 
+  userId: string | null 
+}) {
+  const [createName, setCreateName] = useState("");
   const [createPassword, setCreatePassword] = useState("");
-  const [showCreatePassword, setShowCreatePassword] = useState(false);
   const [createError, setCreateError] = useState("");
   const [creating, setCreating] = useState(false);
 
-  const [joinCode, setJoinCode] = useState("");
+  const [joinName, setJoinName] = useState("");
   const [joinPassword, setJoinPassword] = useState("");
-  const [showJoinPassword, setShowJoinPassword] = useState(false);
   const [joinError, setJoinError] = useState("");
   const [joining, setJoining] = useState(false);
 
@@ -19,73 +23,85 @@ export function Landing({ onJoin, userId }: { onJoin: (code: string, password: s
     e.preventDefault();
     setCreateError("");
     
-    if (!createCode.trim() || !createPassword.trim()) {
-      return setCreateError("Both Room Code and Password are required.");
+    // Validation: 3-30 chars, letters, numbers, hyphen, underscore
+    if (!createName.match(/^[a-zA-Z0-9_-]{3,30}$/)) {
+      return setCreateError("Name must be 3-30 chars: letters, numbers, -, _");
     }
-    if (createCode.length < 4) {
-      return setCreateError("Room Code must be at least 4 characters.");
+    if (createPassword.length < 6) {
+      return setCreateError("Password must be at least 6 characters.");
     }
     if (!userId) {
-      return setCreateError("Still connecting to secure network. Try again in a second.");
+      return setCreateError("Still connecting to secure network...");
     }
 
     setCreating(true);
 
-    const { data: existingRoom } = await supabase
-      .from("rooms")
-      .select("id")
-      .eq("code", createCode.toUpperCase())
-      .single();
+    try {
+      // 1. Generate one-way proof (password is never sent to server)
+      const verifier = await generateVerifier(createName.toLowerCase(), createPassword);
+      
+      // 2. Call secure RPC to create room
+      const { data: roomId, error } = await supabase.rpc('create_room', {
+        room_name: createName.toLowerCase(),
+        verifier: verifier
+      });
 
-    if (existingRoom) {
-      setCreateError("This Room Code is already in use. Try another.");
+      if (error) {
+        // Postgres Error 23505 = Unique Violation (Room name taken)
+        if (error.code === '23505') {
+          throw new Error("This room name is already taken. Please try another.");
+        }
+        throw error;
+      }
+
+      // 3. Derive the AES key locally using the new roomId as salt
+      const key = await deriveKey(createPassword, roomId);
+      
+      // 4. Enter the room
+      onJoin(createName.toLowerCase(), key);
+
+    } catch (err: any) {
+      setCreateError(err.message || "Failed to create room.");
+    } finally {
       setCreating(false);
-      return;
     }
-
-    // INSERT WITH created_by ID
-    const { error: createError } = await supabase
-      .from("rooms")
-      .insert([{ 
-        code: createCode.toUpperCase(), 
-        salt: crypto.randomUUID(),
-        created_by: userId // <--- This makes them the HOST
-      }]);
-
-    if (createError) {
-      setCreateError(createError.message);
-      setCreating(false);
-      return;
-    }
-
-    onJoin(createCode.toUpperCase(), createPassword);
-    setCreating(false);
   };
 
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setJoinError("");
 
-    if (!joinCode.trim() || !joinPassword.trim()) {
-      return setJoinError("Both Room Code and Password are required.");
+    if (!joinName || !joinPassword) {
+      return setJoinError("Both fields are required.");
+    }
+    if (!userId) {
+      return setJoinError("Still connecting to secure network...");
     }
 
     setJoining(true);
 
-    const { data, error: findError } = await supabase
-      .from("rooms")
-      .select("code")
-      .eq("code", joinCode.toUpperCase())
-      .single();
+    try {
+      // 1. Generate proof
+      const verifier = await generateVerifier(joinName.toLowerCase(), joinPassword);
+      
+      // 2. Verify with server via RPC
+      const { data: roomId, error } = await supabase.rpc('join_room', {
+        room_name: joinName.toLowerCase(),
+        verifier: verifier
+      });
 
-    if (findError || !data) {
-      setJoinError("Room not found. Check the code.");
+      if (error) throw error;
+
+      // 3. Derive local AES key
+      const key = await deriveKey(joinPassword, roomId);
+      onJoin(joinName.toLowerCase(), key);
+
+    } catch (err: any) {
+      // Postgres throws a generic error so attackers can't guess room names
+      setJoinError("Invalid room name or password.");
+    } finally {
       setJoining(false);
-      return;
     }
-
-    onJoin(data.code, joinPassword);
-    setJoining(false);
   };
 
   return (
@@ -96,76 +112,66 @@ export function Landing({ onJoin, userId }: { onJoin: (code: string, password: s
       </div>
 
       <div className="landing-grid">
-        {/* CREATE SECTION */}
+        {/* CREATE PANEL */}
         <div className="action-panel">
-          <h2 className="panel-title">Create New Room</h2>
+          <h2 className="panel-title">Create Room</h2>
           <form onSubmit={handleCreateRoom} className="panel-form">
             <div className="input-group">
-              <label>Room Code</label>
+              <label>Room Name</label>
               <input
                 type="text"
-                placeholder="e.g. ALPHA-01"
-                value={createCode}
-                onChange={(e) => setCreateCode(e.target.value.toUpperCase())}
-                maxLength={12}
+                placeholder="e.g. alpha-room"
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value.toLowerCase())}
+                maxLength={30}
                 className="terminal-input"
               />
             </div>
             <div className="input-group">
               <label>Encryption Password</label>
-              <div className="password-wrapper">
-                <input
-                  type={showCreatePassword ? "text" : "password"}
-                  placeholder="Enter secure password"
-                  value={createPassword}
-                  onChange={(e) => setCreatePassword(e.target.value)}
-                  className="terminal-input"
-                />
-                <button type="button" className="toggle-pw" onClick={() => setShowCreatePassword(!showCreatePassword)}>
-                  {showCreatePassword ? "HIDE" : "SHOW"}
-                </button>
-              </div>
+              <input
+                type="password"
+                placeholder="Min 6 chars"
+                value={createPassword}
+                onChange={(e) => setCreatePassword(e.target.value)}
+                className="terminal-input"
+              />
             </div>
             {createError && <div className="error-msg">{createError}</div>}
-            <button type="submit" className="btn primary" disabled={creating}>
-              {creating ? "Initializing..." : "Create & Enter Room"}
+            <button type="submit" className="btn" disabled={creating}>
+              {creating ? "Creating..." : "Initialize Room"}
             </button>
           </form>
         </div>
 
-        {/* JOIN SECTION */}
+        {/* JOIN PANEL */}
         <div className="action-panel">
-          <h2 className="panel-title">Join Existing Room</h2>
+          <h2 className="panel-title">Join Room</h2>
           <form onSubmit={handleJoinRoom} className="panel-form">
             <div className="input-group">
-              <label>Room Code</label>
+              <label>Room Name</label>
               <input
                 type="text"
-                placeholder="Enter room code"
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                maxLength={12}
+                placeholder="Enter room name"
+                value={joinName}
+                onChange={(e) => setJoinName(e.target.value.toLowerCase())}
+                maxLength={30}
                 className="terminal-input"
               />
             </div>
             <div className="input-group">
-              <label>Encryption Password</label>
-              <div className="password-wrapper">
-                <input
-                  type={showJoinPassword ? "text" : "password"}
-                  placeholder="Enter secure password"
-                  value={joinPassword}
-                  onChange={(e) => setJoinPassword(e.target.value)}
-                  className="terminal-input"
-                />
-                <button type="button" className="toggle-pw" onClick={() => setShowJoinPassword(!showJoinPassword)}>
-                  {showJoinPassword ? "HIDE" : "SHOW"}
-                </button>
-              </div>
+              <label>Password</label>
+              <input
+                type="password"
+                placeholder="Enter password"
+                value={joinPassword}
+                onChange={(e) => setJoinPassword(e.target.value)}
+                className="terminal-input"
+              />
             </div>
             {joinError && <div className="error-msg">{joinError}</div>}
-            <button type="submit" className="btn secondary" disabled={joining}>
-              {joining ? "Connecting..." : "Join Room"}
+            <button type="submit" className="btn" disabled={joining}>
+              {joining ? "Authenticating..." : "Connect to Room"}
             </button>
           </form>
         </div>
