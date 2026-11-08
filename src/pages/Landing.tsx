@@ -33,13 +33,22 @@ export function Landing({
     if (createPassword.length < 6) {
       return setCreateError("Password must be at least 6 characters.");
     }
-    if (!userId) {
-      return setCreateError("Still authenticating. Please wait a moment.");
-    }
 
     setCreating(true);
 
     try {
+      // FORCE AUTH CHECK: If userId is missing, trigger an anonymous login right now
+      let currentUserId = userId;
+      if (!currentUserId) {
+        const { data, error } = await supabase.auth.signInAnonymously();
+        if (error) throw new Error("Auth failed: " + error.message);
+        currentUserId = data.user?.id || null;
+      }
+
+      if (!currentUserId) {
+        throw new Error("Unable to create a secure session. Please enable cookies.");
+      }
+
       const proof = await solveProofOfWork();
       const verifier = await generateVerifier(createName.toLowerCase(), createPassword);
       
@@ -67,13 +76,22 @@ export function Landing({
 
     if (honeypot) return setJoinError("Bot detected.");
     if (!joinName || !joinPassword) return setJoinError("Both fields are required.");
-    if (!userId) {
-      return setJoinError("Still authenticating. Please wait a moment.");
-    }
 
     setJoining(true);
 
     try {
+      // FORCE AUTH CHECK
+      let currentUserId = userId;
+      if (!currentUserId) {
+        const { data, error } = await supabase.auth.signInAnonymously();
+        if (error) throw new Error("Auth failed: " + error.message);
+        currentUserId = data.user?.id || null;
+      }
+
+      if (!currentUserId) {
+        throw new Error("Unable to create a secure session. Please enable cookies.");
+      }
+
       const proof = await solveProofOfWork();
       const verifier = await generateVerifier(joinName.toLowerCase(), joinPassword);
       
@@ -100,8 +118,6 @@ export function Landing({
       <div className="landing-header">
         <h1 className="title">SECURE_CHAT</h1>
         <p className="subtitle">Encrypted. Ephemeral. Anonymous.</p>
-        {/* Visual indicator that auth is loading */}
-        {!userId && <p style={{ color: "#ff3333", fontSize: "0.8rem", marginTop: "10px" }}>Establishing secure session...</p>}
       </div>
 
       <div className="landing-grid">
@@ -140,9 +156,8 @@ export function Landing({
             </div>
             {createError && <div className="error-msg">{createError}</div>}
             
-            {/* Button is disabled if userId is not loaded */}
-            <button type="submit" className="btn" disabled={creating || !userId}>
-              {!userId ? "Waiting for Auth..." : creating ? "Computing Proof..." : "Initialize Room"}
+            <button type="submit" className="btn" disabled={creating}>
+              {creating ? "Computing Proof..." : "Initialize Room"}
             </button>
           </form>
         </div>
@@ -173,9 +188,8 @@ export function Landing({
             </div>
             {joinError && <div className="error-msg">{joinError}</div>}
             
-            {/* Button is disabled if userId is not loaded */}
-            <button type="submit" className="btn" disabled={joining || !userId}>
-              {!userId ? "Waiting for Auth..." : joining ? "Computing Proof..." : "Connect to Room"}
+            <button type="submit" className="btn" disabled={joining}>
+              {joining ? "Computing Proof..." : "Connect to Room"}
             </button>
           </form>
         </div>
