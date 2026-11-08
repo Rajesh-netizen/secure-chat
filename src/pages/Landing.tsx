@@ -20,16 +20,13 @@ export function Landing({
   const [joinError, setJoinError] = useState("");
   const [joining, setJoining] = useState(false);
 
-  // Honeypot field (bots fill everything)
   const [honeypot, setHoneypot] = useState("");
 
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreateError("");
 
-    // Honeypot check
     if (honeypot) return setCreateError("Bot detected.");
-
     if (!createName.match(/^[a-zA-Z0-9_-]{3,30}$/)) {
       return setCreateError("Name must be 3-30 chars: letters, numbers, -, _");
     }
@@ -37,19 +34,15 @@ export function Landing({
       return setCreateError("Password must be at least 6 characters.");
     }
     if (!userId) {
-      return setCreateError("Still connecting...");
+      return setCreateError("Still authenticating. Please wait a moment.");
     }
 
     setCreating(true);
 
     try {
-      // 1. Solve Proof of Work
       const proof = await solveProofOfWork();
-      
-      // 2. Generate Verifier
       const verifier = await generateVerifier(createName.toLowerCase(), createPassword);
       
-      // 3. Send to Supabase
       const { data: roomId, error } = await supabase.rpc('create_room', {
         room_name: createName.toLowerCase(),
         verifier: verifier,
@@ -74,7 +67,9 @@ export function Landing({
 
     if (honeypot) return setJoinError("Bot detected.");
     if (!joinName || !joinPassword) return setJoinError("Both fields are required.");
-    if (!userId) return setJoinError("Still connecting...");
+    if (!userId) {
+      return setJoinError("Still authenticating. Please wait a moment.");
+    }
 
     setJoining(true);
 
@@ -105,10 +100,11 @@ export function Landing({
       <div className="landing-header">
         <h1 className="title">SECURE_CHAT</h1>
         <p className="subtitle">Encrypted. Ephemeral. Anonymous.</p>
+        {/* Visual indicator that auth is loading */}
+        {!userId && <p style={{ color: "#ff3333", fontSize: "0.8rem", marginTop: "10px" }}>Establishing secure session...</p>}
       </div>
 
       <div className="landing-grid">
-        {/* Honeypot Field (Hidden from real users) */}
         <input 
           type="text" 
           value={honeypot} 
@@ -118,7 +114,6 @@ export function Landing({
           autoComplete="off" 
         />
 
-        {/* CREATE PANEL */}
         <div className="action-panel">
           <h2 className="panel-title">Create Room</h2>
           <form onSubmit={handleCreateRoom} className="panel-form">
@@ -144,13 +139,14 @@ export function Landing({
               />
             </div>
             {createError && <div className="error-msg">{createError}</div>}
-            <button type="submit" className="btn" disabled={creating}>
-              {creating ? "Computing Proof of Work..." : "Initialize Room"}
+            
+            {/* Button is disabled if userId is not loaded */}
+            <button type="submit" className="btn" disabled={creating || !userId}>
+              {!userId ? "Waiting for Auth..." : creating ? "Computing Proof..." : "Initialize Room"}
             </button>
           </form>
         </div>
 
-        {/* JOIN PANEL */}
         <div className="action-panel">
           <h2 className="panel-title">Join Room</h2>
           <form onSubmit={handleJoinRoom} className="panel-form">
@@ -176,8 +172,10 @@ export function Landing({
               />
             </div>
             {joinError && <div className="error-msg">{joinError}</div>}
-            <button type="submit" className="btn" disabled={joining}>
-              {joining ? "Computing Proof of Work..." : "Connect to Room"}
+            
+            {/* Button is disabled if userId is not loaded */}
+            <button type="submit" className="btn" disabled={joining || !userId}>
+              {!userId ? "Waiting for Auth..." : joining ? "Computing Proof..." : "Connect to Room"}
             </button>
           </form>
         </div>
