@@ -8,7 +8,6 @@ export default function App() {
   const [roomPassword, setRoomPassword] = useState("");
   const { userId, loading } = useAuth();
 
-  // 1. On mount, check if we have a saved session in sessionStorage
   useEffect(() => {
     const savedRoom = sessionStorage.getItem("activeRoom");
     const savedPassword = sessionStorage.getItem("roomPassword");
@@ -19,7 +18,6 @@ export default function App() {
     }
   }, []);
 
-  // 2. Handler to join a room (saves to sessionStorage)
   const handleJoin = (code: string, pass: string) => {
     setActiveRoom(code);
     setRoomPassword(pass);
@@ -27,7 +25,6 @@ export default function App() {
     sessionStorage.setItem("roomPassword", pass);
   };
 
-  // 3. Handler to leave a room (clears sessionStorage)
   const handleLeave = () => {
     setActiveRoom(null);
     setRoomPassword("");
@@ -36,24 +33,16 @@ export default function App() {
   };
 
   if (loading) {
-    return (
-      <div style={{ color: "#00ff41", fontFamily: "monospace", display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
-        Initializing secure connection...
-      </div>
-    );
+    return <div style={{ color: "#00ff41", fontFamily: "monospace", display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>Initializing secure connection...</div>;
   }
 
   return (
     <div className="app-container">
       {activeRoom ? (
-        <Room 
-          roomCode={activeRoom} 
-          password={roomPassword} 
-          userId={userId} 
-          onLeave={handleLeave} 
-        />
+        <Room roomCode={activeRoom} password={roomPassword} userId={userId} onLeave={handleLeave} />
       ) : (
-        <Landing onJoin={handleJoin} />
+        // Pass userId to Landing here!
+        <Landing onJoin={handleJoin} userId={userId} />
       )}
     </div>
   );

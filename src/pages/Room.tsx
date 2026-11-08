@@ -17,13 +17,11 @@ export function Room({
   const [newMessage, setNewMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [roomId, setRoomId] = useState<string | null>(null);
+  const [isCreator, setIsCreator] = useState(false); // Track if current user is host
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
   const [isSending, setIsSending] = useState(false);
   
-  // Self-destruct timer state (0 = off)
   const [destructTime, setDestructTime] = useState<number>(0);
-  
-  // Typing indicator state
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const channelRef = useRef<any>(null);
 
@@ -31,12 +29,12 @@ export function Room({
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [showJumpButton, setShowJumpButton] = useState(false);
 
-  // 1. Init Room & Crypto
+  // 1. Init Room, Check Creator, Generate Key
   useEffect(() => {
     async function initRoom() {
       const { data, error } = await supabase
         .from("rooms")
-        .select("id, salt")
+        .select("id, salt, created_by")
         .eq("code", roomCode)
         .single();
 
@@ -45,12 +43,15 @@ export function Room({
         onLeave();
         return;
       }
+      
       setRoomId(data.id);
+      setIsCreator(data.created_by === userId); // Check if we are the host
+      
       const key = await deriveKey(password, data.salt);
       setCryptoKey(key);
     }
-    initRoom();
-  }, [roomCode, password, onLeave]);
+    if (userId) initRoom();
+  }, [roomCode, password, userId, onLeave]);
 
   // 2. Fetch Messages
   useEffect(() => {
@@ -79,13 +80,12 @@ export function Room({
     fetchMessages();
   }, [roomId, cryptoKey]);
 
-  // 3. Realtime & Typing Listener
+  // 3. Realtime Listeners (Messages, Typing, Room Deleted)
   useEffect(() => {
     if (!roomId || !cryptoKey) return;
 
     const channel = supabase
       .channel(`room_${roomId}`)
-      // Listen for new messages
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages", filter: `room_id=eq.${roomId}` },
@@ -97,7 +97,6 @@ export function Room({
           });
         }
       )
-      // Listen for deleted messages (burn or self-destruct)
       .on(
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "messages", filter: `room_id=eq.${roomId}` },
@@ -105,17 +104,21 @@ export function Room({
           setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
         }
       )
-      // Listen for typing indicators
+      // LISTEN FOR ROOM DELETION
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
+        () => {
+          alert("The room creator has closed this room.");
+          onLeave();
+        }
+      )
       .on("broadcast", { event: "typing" }, (payload) => {
         if (payload.payload.userId !== userId) {
           setTypingUsers((prev) => {
-            if (!prev.includes(payload.payload.nickname)) {
-              return [...prev, payload.payload.nickname];
-            }
+            if (!prev.includes(payload.payload.nickname)) return [...prev, payload.payload.nickname];
             return prev;
           });
-          
-          // Remove typing indicator after 2 seconds
           setTimeout(() => {
             setTypingUsers((prev) => prev.filter(u => u !== payload.payload.nickname));
           }, 2000);
@@ -125,25 +128,22 @@ export function Room({
 
     channelRef.current = channel;
     return () => { supabase.removeChannel(channel); };
-  }, [roomId, cryptoKey, userId]);
+  }, [roomId, cryptoKey, userId, onLeave]);
 
-  // 4. Client-side Self-Destruct Timer
+  // Client-side Self-Destruct Timer
   useEffect(() => {
     const interval = setInterval(() => {
       const now = new Date().getTime();
       setMessages((prev) => 
         prev.filter((msg) => {
-          if (msg.expires_at) {
-            return new Date(msg.expires_at).getTime() > now;
-          }
+          if (msg.expires_at) return new Date(msg.expires_at).getTime() > now;
           return true;
         })
       );
-    }, 1000); // Check every second
+    }, 1000);
     return () => clearInterval(interval);
   }, []);
 
-  // Scroll Logic
   const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTo({ top: scrollContainerRef.current.scrollHeight, behavior });
@@ -165,7 +165,6 @@ export function Room({
     }
   }, [messages, isAtBottom]);
 
-  // Typing broadcast
   const handleTyping = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setNewMessage(e.target.value);
     if (channelRef.current && userId) {
@@ -177,16 +176,18 @@ export function Room({
     }
   };
 
-  // 5. Send Message & Handle Commands
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !userId || !roomId || !cryptoKey || isSending) return;
 
-    // Handle /burn command
     if (newMessage.trim() === "/burn") {
-      if (window.confirm("Are you sure you want to burn this room? All messages will be permanently deleted.")) {
-        await supabase.from("messages").delete().eq("room_id", roomId);
-        setMessages([]);
+      if (isCreator) {
+        if (window.confirm("Are you sure you want to burn this room? All messages will be permanently deleted.")) {
+          await supabase.from("messages").delete().eq("room_id", roomId);
+          setMessages([]);
+        }
+      } else {
+        alert("Only the room creator can burn the room.");
       }
       setNewMessage("");
       return;
@@ -198,12 +199,8 @@ export function Room({
 
     try {
       const { ciphertext, iv } = await encryptMessage(textToSend, cryptoKey);
-      
-      // Calculate expiry time
       let expires_at = null;
-      if (destructTime > 0) {
-        expires_at = new Date(Date.now() + destructTime).toISOString();
-      }
+      if (destructTime > 0) expires_at = new Date(Date.now() + destructTime).toISOString();
 
       const { error } = await supabase.from("messages").insert({
         room_id: roomId,
@@ -232,8 +229,18 @@ export function Room({
     }
   };
 
-  const handleDisconnect = () => {
-    if (window.confirm("Disconnect from room?")) onLeave();
+  const handleDisconnect = async () => {
+    if (isCreator) {
+      const confirmDestroy = window.confirm("You are the creator. Disconnecting will permanently close this room for everyone and delete all messages. Continue?");
+      if (confirmDestroy) {
+        // Delete the room (cascades to messages)
+        await supabase.from("rooms").delete().eq("id", roomId);
+        onLeave();
+      }
+    } else {
+      const confirmLeave = window.confirm("Are you sure you want to leave this room?");
+      if (confirmLeave) onLeave();
+    }
   };
 
   if (!roomId || !cryptoKey) return <div className="system-msg" style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>Establishing secure connection...</div>;
@@ -245,21 +252,19 @@ export function Room({
           <span className="status-dot"></span>
           <span style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>CONNECTED TO:</span>
           <span style={{ fontWeight: "bold", letterSpacing: "1px" }}>{roomCode}</span>
+          {isCreator && <span style={{ fontSize: "0.7rem", color: "var(--bg)", background: "var(--text)", padding: "2px 6px", borderRadius: "4px", marginLeft: "8px" }}>HOST</span>}
         </div>
         
-        {/* Self Destruct Selector */}
-        <select 
-          className="destruct-select" 
-          value={destructTime} 
-          onChange={(e) => setDestructTime(Number(e.target.value))}
-        >
+        <select className="destruct-select" value={destructTime} onChange={(e) => setDestructTime(Number(e.target.value))}>
           <option value={0}>Self-Destruct: OFF</option>
           <option value={10000}>10 Seconds</option>
           <option value={60000}>1 Minute</option>
           <option value={3600000}>1 Hour</option>
         </select>
 
-        <button onClick={handleDisconnect} className="leave-btn">[ DISCONNECT ]</button>
+        <button onClick={handleDisconnect} className="leave-btn">
+          {isCreator ? "[ CLOSE ROOM ]" : "[ DISCONNECT ]"}
+        </button>
       </div>
 
       <div className="chat-messages" ref={scrollContainerRef} onScroll={handleScroll}>
@@ -284,9 +289,7 @@ export function Room({
       </div>
 
       {typingUsers.length > 0 && (
-        <div className="typing-indicator">
-          {typingUsers.join(", ")} is typing...
-        </div>
+        <div className="typing-indicator">{typingUsers.join(", ")} is typing...</div>
       )}
 
       {showJumpButton && (
@@ -301,7 +304,7 @@ export function Room({
           value={newMessage}
           onChange={handleTyping}
           onKeyDown={handleKeyDown}
-          placeholder="Type a message... (or /burn to delete room)"
+          placeholder="Type a message..."
           className="chat-input"
           rows={1}
           autoFocus

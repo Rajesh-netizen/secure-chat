@@ -1,15 +1,14 @@
 import { useState } from "react";
 import { supabase } from "../lib/supabase";
 
-export function Landing({ onJoin }: { onJoin: (code: string, password: string) => void }) {
-  // Independent states for Create Section
+// Add userId to props
+export function Landing({ onJoin, userId }: { onJoin: (code: string, password: string) => void; userId: string | null }) {
   const [createCode, setCreateCode] = useState("");
   const [createPassword, setCreatePassword] = useState("");
   const [showCreatePassword, setShowCreatePassword] = useState(false);
   const [createError, setCreateError] = useState("");
   const [creating, setCreating] = useState(false);
 
-  // Independent states for Join Section
   const [joinCode, setJoinCode] = useState("");
   const [joinPassword, setJoinPassword] = useState("");
   const [showJoinPassword, setShowJoinPassword] = useState(false);
@@ -26,10 +25,12 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
     if (createCode.length < 4) {
       return setCreateError("Room Code must be at least 4 characters.");
     }
+    if (!userId) {
+      return setCreateError("Still connecting to secure network. Try again in a second.");
+    }
 
     setCreating(true);
 
-    // Check if room code already exists
     const { data: existingRoom } = await supabase
       .from("rooms")
       .select("id")
@@ -42,10 +43,14 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
       return;
     }
 
-    // Insert new room
+    // INSERT WITH created_by ID
     const { error: createError } = await supabase
       .from("rooms")
-      .insert([{ code: createCode.toUpperCase(), salt: crypto.randomUUID() }]);
+      .insert([{ 
+        code: createCode.toUpperCase(), 
+        salt: crypto.randomUUID(),
+        created_by: userId // <--- This makes them the HOST
+      }]);
 
     if (createError) {
       setCreateError(createError.message);
@@ -67,7 +72,6 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
 
     setJoining(true);
 
-    // Check if room exists
     const { data, error: findError } = await supabase
       .from("rooms")
       .select("code")
@@ -80,8 +84,6 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
       return;
     }
 
-    // Note: True password verification happens inside the Room component
-    // when it tries to decrypt messages.
     onJoin(data.code, joinPassword);
     setJoining(false);
   };
@@ -94,11 +96,10 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
       </div>
 
       <div className="landing-grid">
-        {/* SECTION A: CREATE ROOM */}
+        {/* CREATE SECTION */}
         <div className="action-panel">
           <h2 className="panel-title">Create New Room</h2>
           <form onSubmit={handleCreateRoom} className="panel-form">
-            
             <div className="input-group">
               <label>Room Code</label>
               <input
@@ -110,7 +111,6 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
                 className="terminal-input"
               />
             </div>
-
             <div className="input-group">
               <label>Encryption Password</label>
               <div className="password-wrapper">
@@ -121,29 +121,22 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
                   onChange={(e) => setCreatePassword(e.target.value)}
                   className="terminal-input"
                 />
-                <button 
-                  type="button" 
-                  className="toggle-pw"
-                  onClick={() => setShowCreatePassword(!showCreatePassword)}
-                >
+                <button type="button" className="toggle-pw" onClick={() => setShowCreatePassword(!showCreatePassword)}>
                   {showCreatePassword ? "HIDE" : "SHOW"}
                 </button>
               </div>
             </div>
-
             {createError && <div className="error-msg">{createError}</div>}
-
             <button type="submit" className="btn primary" disabled={creating}>
               {creating ? "Initializing..." : "Create & Enter Room"}
             </button>
           </form>
         </div>
 
-        {/* SECTION B: JOIN ROOM */}
+        {/* JOIN SECTION */}
         <div className="action-panel">
           <h2 className="panel-title">Join Existing Room</h2>
           <form onSubmit={handleJoinRoom} className="panel-form">
-            
             <div className="input-group">
               <label>Room Code</label>
               <input
@@ -155,7 +148,6 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
                 className="terminal-input"
               />
             </div>
-
             <div className="input-group">
               <label>Encryption Password</label>
               <div className="password-wrapper">
@@ -166,18 +158,12 @@ export function Landing({ onJoin }: { onJoin: (code: string, password: string) =
                   onChange={(e) => setJoinPassword(e.target.value)}
                   className="terminal-input"
                 />
-                <button 
-                  type="button" 
-                  className="toggle-pw"
-                  onClick={() => setShowJoinPassword(!showJoinPassword)}
-                >
+                <button type="button" className="toggle-pw" onClick={() => setShowJoinPassword(!showJoinPassword)}>
                   {showJoinPassword ? "HIDE" : "SHOW"}
                 </button>
               </div>
             </div>
-
             {joinError && <div className="error-msg">{joinError}</div>}
-
             <button type="submit" className="btn secondary" disabled={joining}>
               {joining ? "Connecting..." : "Join Room"}
             </button>
